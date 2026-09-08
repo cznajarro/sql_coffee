@@ -11,6 +11,7 @@ WIDTH, HEIGHT = 1000, 650
 FPS = 60
 DAY_LENGTH_SECONDS = 90
 STARTING_CASH = 25.00
+MAX_UPGRADE_LEVEL = 5
 
 COLORS = { #color palette for the game
     "cream": (247, 238, 220),
@@ -26,8 +27,24 @@ COLORS = { #color palette for the game
 DATA_DIR = Path(__file__).parent / "data" # directory for storing game data
 DATABASE_PATH = DATA_DIR / "coffee_shop.db" # path to the SQLite database file
 
+GRINDER_BUTTON = pygame.Rect(520, 475, 420, 48)
+SIGN_BUTTON = pygame.Rect(520, 540, 420, 48)
 
-@dataclass(frozen=True) 
+UPGRADES = { #available upgrades 
+    "grinder": {
+        "name": "Better Grinder",
+        "base_cost": 20.00,
+        "description": "10% faster preparation per level",
+    },
+    "sign": {
+        "name": "Store Sign",
+        "base_cost": 25.00,
+        "description": "8% faster customer arrivals per level",
+    },
+}
+
+
+@dataclass(frozen=True)
 class Product: # represents a coffee product in the game
     name: str
     price: float
@@ -40,6 +57,8 @@ class Product: # represents a coffee product in the game
 class Order:
     product: Product
     remaining_seconds: float
+    grinder_level: int
+    sign_level: int
     total_wait_seconds: float = 0.0
 
 
@@ -82,11 +101,24 @@ def create_database(): #creates the SQLite database and tables if they don't exi
             sale_price REAL NOT NULL,
             unit_cost REAL NOT NULL,
             wait_seconds REAL NOT NULL,
+            grinder_level INTEGER NOT NULL DEFAULT 0,
+            sign_level INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (day_id) REFERENCES game_days(day_id),
             FOREIGN KEY (product_id) REFERENCES products(product_id)
         );
+
+        CREATE TABLE IF NOT EXISTS upgrade_purchases (
+            purchase_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day_id INTEGER NOT NULL,
+            upgrade_name TEXT NOT NULL,
+            level INTEGER NOT NULL,
+            cost REAL NOT NULL,
+            FOREIGN KEY (day_id) REFERENCES game_days(day_id)
+        );
         """
     )
+
+    add_missing_transaction_columns(connection)
 
     for product in PRODUCTS: #insert or update the products in the database
         connection.execute(
@@ -103,6 +135,21 @@ def create_database(): #creates the SQLite database and tables if they don't exi
 
     connection.commit()
     return connection
+
+
+def add_missing_transaction_columns(connection): #safely adds new columns to existing databases from previous versions of the game, ensuring that the transactions table has the necessary columns for grinder_level and sign_level
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(transactions)").fetchall() #get the list of existing columns in the transactions table
+    }
+    if "grinder_level" not in columns: #since these are new columns, we need to check if they exist before adding them to avoid errors when upgrading from previous versions of the game
+        connection.execute(
+            "ALTER TABLE transactions ADD COLUMN grinder_level INTEGER NOT NULL DEFAULT 0"
+        )
+    if "sign_level" not in columns:
+        connection.execute(
+            "ALTER TABLE transactions ADD COLUMN sign_level INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def start_day(connection): #records the start of a new game day in the database and returns the day_id of the newly created record
@@ -135,9 +182,10 @@ def record_sale(connection, day_id, order, game_minute): #records a completed sa
     connection.execute(
         """
         INSERT INTO transactions (
-            day_id, product_id, game_minute, sale_price, unit_cost, wait_seconds
+            day_id, product_id, game_minute, sale_price, unit_cost,
+            wait_seconds, grinder_level, sign_level
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             day_id,
@@ -146,7 +194,20 @@ def record_sale(connection, day_id, order, game_minute): #records a completed sa
             order.product.price,
             order.product.cost,
             round(order.total_wait_seconds, 2),
+            order.grinder_level,
+            order.sign_level,
         ),
+    )
+    connection.commit()
+
+
+def record_upgrade_purchase(connection, day_id, upgrade_name, level, cost): #records an upgrade purchase in the upgrade_purchases table
+    connection.execute(
+        """
+        INSERT INTO upgrade_purchases (day_id, upgrade_name, level, cost)
+        VALUES (?, ?, ?, ?)
+        """,
+        (day_id, upgrade_name, level, round(cost, 2)),
     )
     connection.commit()
 
@@ -159,21 +220,93 @@ def choose_product(): #randomly picks a product from the PRODUCTS list based on 
     )[0]
 
 
+def upgrade_cost(upgrade_key, current_level): #calculates the cost of the next upgrade level
+    return UPGRADES[upgrade_key]["base_cost"] * (current_level + 1)
+
+
+def prep_time(product, grinder_level): #returns preparation time reduced by 10% per grinder level
+    return product.prep_seconds * (0.90 ** grinder_level)
+
+
+def customer_arrival_time(sign_level): #returns a random arrival interval reduced by 8% per sign level
+    return random.uniform(1.5, 3.5) * (0.92 ** sign_level)
+
+
+def buy_upgrade(connection, state, upgrade_key): #handles purchasing an upgrade, deducting cost and recording the purchase
+    if state["ended"]:
+        return
+    current_level = state["upgrades"][upgrade_key]
+    if current_level >= MAX_UPGRADE_LEVEL:
+        return
+    cost = upgrade_cost(upgrade_key, current_level)
+    if state["cash"] < cost:
+        return
+
+    new_level = current_level + 1
+    state["cash"] -= cost
+    state["upgrade_spending"] += cost
+    state["upgrades"][upgrade_key] = new_level
+
+    record_upgrade_purchase(
+        connection,
+        state["day_id"],
+        UPGRADES[upgrade_key]["name"],
+        new_level,
+        cost,
+    )
+
+    state["recent_sales"].insert(
+        0,
+        f"Bought {UPGRADES[upgrade_key]['name']} Lv {new_level}: -${cost:.2f}",
+    )
+    state["recent_sales"] = state["recent_sales"][:6]
+
+
 def draw_text(surface, font, text, position, color=COLORS["dark_brown"]): #renders the specified text onto the given surface at the specified position using the provided font and color
     surface.blit(font.render(text, True, color), position)
 
 
-def reset_game_day(connection, day_number, cash): #resets the game state for a new day, initializing the day_id, day_number, cash balance, elapsed time, next customer arrival time, and other relevant statistics
+def draw_upgrade_button(surface, small_font, rect, state, upgrade_key): #draws an upgrade button with current level, cost, and description
+    level = state["upgrades"][upgrade_key]
+    maxed = level >= MAX_UPGRADE_LEVEL
+    cost = 0 if maxed else upgrade_cost(upgrade_key, level)
+    affordable = state["cash"] >= cost
+    enabled = not state["ended"] and not maxed and affordable
+
+    color = COLORS["green"] if enabled else COLORS["gray"]
+    pygame.draw.rect(surface, color, rect, border_radius=8)
+
+    name = UPGRADES[upgrade_key]["name"]
+    cost_text = "MAX" if maxed else f"${cost:.2f}"
+    draw_text(
+        surface,
+        small_font,
+        f"{name}  Lv {level}/{MAX_UPGRADE_LEVEL}  |  Cost: {cost_text}",
+        (rect.x + 12, rect.y + 7),
+        COLORS["white"] if enabled else COLORS["dark_brown"],
+    )
+    draw_text(
+        surface,
+        small_font,
+        UPGRADES[upgrade_key]["description"],
+        (rect.x + 12, rect.y + 27),
+        COLORS["white"] if enabled else COLORS["dark_brown"],
+    )
+
+
+def reset_game_day(connection, day_number, cash, upgrades): #resets the game state for a new day, initializing the day_id, day_number, cash balance, elapsed time, next customer arrival time, and other relevant statistics
     return {
         "day_id": start_day(connection),
         "day_number": day_number,
         "cash": cash,
+        "upgrades": upgrades.copy(),
         "elapsed": 0.0,
-        "next_customer": random.uniform(1.5, 3.5),
+        "next_customer": customer_arrival_time(upgrades["sign"]),
         "customers": 0,
         "completed": 0,
         "revenue": 0.0,
         "costs": 0.0,
+        "upgrade_spending": 0.0,
         "queue": [],
         "recent_sales": [],
         "ended": False,
@@ -191,7 +324,8 @@ def main():
     small_font = pygame.font.SysFont("arial", 16)
 
     connection = create_database() #establish a connection to the SQLite database and create the necessary tables if they don't exist
-    state = reset_game_day(connection, day_number=1, cash=STARTING_CASH) #initialize the game state for the first day with the starting cash balance
+    starting_upgrades = {"grinder": 0, "sign": 0}
+    state = reset_game_day(connection, day_number=1, cash=STARTING_CASH, upgrades=starting_upgrades) #initialize the game state for the first day with the starting cash balance
     running = True
 
     while running:
@@ -208,7 +342,17 @@ def main():
                         connection,
                         day_number=state["day_number"] + 1,
                         cash=state["cash"],
+                        upgrades=state["upgrades"],
                     )
+                elif event.key == pygame.K_g and not state["ended"]:
+                    buy_upgrade(connection, state, "grinder")
+                elif event.key == pygame.K_s and not state["ended"]:
+                    buy_upgrade(connection, state, "sign")
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if GRINDER_BUTTON.collidepoint(event.pos):
+                    buy_upgrade(connection, state, "grinder")
+                elif SIGN_BUTTON.collidepoint(event.pos):
+                    buy_upgrade(connection, state, "sign")
 
         if not state["ended"]: #update the game state if the day has not ended, including elapsed time, customer arrivals, order processing, and sales recording
             state["elapsed"] += dt
@@ -216,14 +360,23 @@ def main():
 
             if state["next_customer"] <= 0: #if it's time for a new customer to arrive, choose a product and add an order to the queue, then reset the next customer arrival time
                 product = choose_product()
-                state["queue"].append(Order(product, product.prep_seconds))
+                grinder_level = state["upgrades"]["grinder"]
+                sign_level = state["upgrades"]["sign"]
+                state["queue"].append(
+                    Order(
+                        product,
+                        prep_time(product, grinder_level),
+                        grinder_level,
+                        sign_level,
+                    )
+                )
                 state["customers"] += 1
-                state["next_customer"] = random.uniform(1.5, 3.5)
+                state["next_customer"] = customer_arrival_time(sign_level)
 
             for order in state["queue"]:
                 order.total_wait_seconds += dt
 
-            if state["queue"]:# if there are orders in the queue, process the first order by decrementing its remaining preparation time and checking if it has been completed 
+            if state["queue"]:# if there are orders in the queue, process the first order by decrementing its remaining preparation time and checking if it has been completed
                 current_order = state["queue"][0]
                 current_order.remaining_seconds -= dt
 
@@ -263,7 +416,7 @@ def main():
         screen.fill(COLORS["cream"]) #background
 
         pygame.draw.rect(screen, COLORS["brown"], (0, 0, WIDTH, 75)) #top bar
-        draw_text(screen, title_font, "Coffee Cafe", (25, 20), COLORS["white"])
+        draw_text(screen, title_font, "Bean Counter Cafe", (25, 20), COLORS["white"])
         draw_text(screen, body_font, f"Day {state['day_number']}", (580, 25), COLORS["white"])
         draw_text(screen, body_font, f"Cash: ${state['cash']:.2f}", (700, 25), COLORS["white"])
         draw_text(
@@ -312,10 +465,15 @@ def main():
             COLORS["green"],
         )
 
-        pygame.draw.rect(screen, COLORS["white"], (40, 420, 920, 190), border_radius=12)
+        pygame.draw.rect(screen, COLORS["white"], (40, 420, 440, 190), border_radius=12)
         draw_text(screen, title_font, "Recent sales", (60, 440))
         for index, sale in enumerate(state["recent_sales"]):
             draw_text(screen, body_font, sale, (65, 485 + index * 23))
+
+        pygame.draw.rect(screen, COLORS["white"], (500, 420, 460, 190), border_radius=12)
+        draw_text(screen, body_font, "Upgrades  (press G / S)", (520, 435))
+        draw_upgrade_button(screen, small_font, GRINDER_BUTTON, state, "grinder")
+        draw_upgrade_button(screen, small_font, SIGN_BUTTON, state, "sign")
 
         if state["ended"]: #if the day has ended, display an overlay with the day's summary and prompt to start the next day
             overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)

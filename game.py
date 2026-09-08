@@ -9,8 +9,8 @@ import pygame
 
 WIDTH, HEIGHT = 1000, 650
 FPS = 60
-DAY_LENGTH_SECONDS = 90
-STARTING_CASH = 25.00
+DAY_LENGTH_SECONDS = 60
+STARTING_CASH = 30.00
 MAX_UPGRADE_LEVEL = 5
 
 COLORS = { #color palette for the game
@@ -30,7 +30,7 @@ DATABASE_PATH = DATA_DIR / "coffee_shop.db" # path to the SQLite database file
 GRINDER_BUTTON = pygame.Rect(520, 475, 420, 48)
 SIGN_BUTTON = pygame.Rect(520, 540, 420, 48)
 
-UPGRADES = { #available upgrades 
+UPGRADES = {
     "grinder": {
         "name": "Better Grinder",
         "base_cost": 20.00,
@@ -137,12 +137,12 @@ def create_database(): #creates the SQLite database and tables if they don't exi
     return connection
 
 
-def add_missing_transaction_columns(connection): #safely adds new columns to existing databases from previous versions of the game, ensuring that the transactions table has the necessary columns for grinder_level and sign_level
+def add_missing_transaction_columns(connection): #safely adds new columns to existing databases when upgrading from v1
     columns = {
         row[1]
-        for row in connection.execute("PRAGMA table_info(transactions)").fetchall() #get the list of existing columns in the transactions table
+        for row in connection.execute("PRAGMA table_info(transactions)").fetchall()
     }
-    if "grinder_level" not in columns: #since these are new columns, we need to check if they exist before adding them to avoid errors when upgrading from previous versions of the game
+    if "grinder_level" not in columns:
         connection.execute(
             "ALTER TABLE transactions ADD COLUMN grinder_level INTEGER NOT NULL DEFAULT 0"
         )
@@ -300,6 +300,7 @@ def reset_game_day(connection, day_number, cash, upgrades): #resets the game sta
         "day_number": day_number,
         "cash": cash,
         "upgrades": upgrades.copy(),
+        "speed_multiplier": 1,
         "elapsed": 0.0,
         "next_customer": customer_arrival_time(upgrades["sign"]),
         "customers": 0,
@@ -330,6 +331,7 @@ def main():
 
     while running:
         dt = clock.tick(FPS) / 1000 #calculate the time elapsed since the last frame in seconds
+        dt = dt * state["speed_multiplier"] #apply fast forward multiplier
 
         for event in pygame.event.get(): #handle user input events, such as quitting the game or pressing keys
             if event.type == pygame.QUIT:
@@ -343,6 +345,10 @@ def main():
                         day_number=state["day_number"] + 1,
                         cash=state["cash"],
                         upgrades=state["upgrades"],
+                    )
+                elif event.key == pygame.K_f: #toggle fast forward
+                    state["speed_multiplier"] = (
+                        2 if state["speed_multiplier"] == 1 else 1
                     )
                 elif event.key == pygame.K_g and not state["ended"]:
                     buy_upgrade(connection, state, "grinder")
@@ -426,6 +432,8 @@ def main():
             (860, 25),
             COLORS["white"],
         )
+        if state["speed_multiplier"] == 2:
+            draw_text(screen, small_font, "2x", (835, 29), COLORS["gold"])
 
         # Draw the main game area
         pygame.draw.rect(screen, COLORS["gray"], (40, 110, 590, 280), border_radius=12)

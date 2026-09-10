@@ -25,6 +25,7 @@ COLORS = { #color palette for the game
 }
 
 DATA_DIR = Path(__file__).parent / "data" # directory for storing game data
+ASSET_DIR = Path(__file__).parent / "assets"
 DATABASE_PATH = DATA_DIR / "coffee_shop.db" # path to the SQLite database file
 
 GRINDER_BUTTON = pygame.Rect(520, 475, 420, 48)
@@ -262,11 +263,34 @@ def buy_upgrade(connection, state, upgrade_key): #handles purchasing an upgrade,
     state["recent_sales"] = state["recent_sales"][:6]
 
 
+def load_assets(): #loads product and upgrade icon images from the assets folder
+    return {
+        "House Coffee": pygame.transform.scale(
+            pygame.image.load(ASSET_DIR / "house_coffee.png").convert_alpha(), (48, 48)
+        ),
+        "Cold Brew": pygame.transform.scale(
+            pygame.image.load(ASSET_DIR / "cold_brew.png").convert_alpha(), (48, 48)
+        ),
+        "Vanilla Latte": pygame.transform.scale(
+            pygame.image.load(ASSET_DIR / "vanilla_latte.png").convert_alpha(), (48, 48)
+        ),
+        "Matcha Latte": pygame.transform.scale(
+            pygame.image.load(ASSET_DIR / "matcha_latte.png").convert_alpha(), (48, 48)
+        ),
+        "grinder": pygame.transform.scale(
+            pygame.image.load(ASSET_DIR / "coffee_grinder.png").convert_alpha(), (40, 40)
+        ),
+        "sign": pygame.transform.scale(
+            pygame.image.load(ASSET_DIR / "wooden_hanging_sign.png").convert_alpha(), (40, 40)
+        ),
+    }
+
+
 def draw_text(surface, font, text, position, color=COLORS["dark_brown"]): #renders the specified text onto the given surface at the specified position using the provided font and color
     surface.blit(font.render(text, True, color), position)
 
 
-def draw_upgrade_button(surface, small_font, rect, state, upgrade_key): #draws an upgrade button with current level, cost, and description
+def draw_upgrade_button(surface, small_font, rect, state, upgrade_key, icon): #draws an upgrade button with current level, cost, and description
     level = state["upgrades"][upgrade_key]
     maxed = level >= MAX_UPGRADE_LEVEL
     cost = 0 if maxed else upgrade_cost(upgrade_key, level)
@@ -275,6 +299,7 @@ def draw_upgrade_button(surface, small_font, rect, state, upgrade_key): #draws a
 
     color = COLORS["green"] if enabled else COLORS["gray"]
     pygame.draw.rect(surface, color, rect, border_radius=8)
+    surface.blit(icon, (rect.x + 7, rect.y + 4))
 
     name = UPGRADES[upgrade_key]["name"]
     cost_text = "MAX" if maxed else f"${cost:.2f}"
@@ -282,14 +307,14 @@ def draw_upgrade_button(surface, small_font, rect, state, upgrade_key): #draws a
         surface,
         small_font,
         f"{name}  Lv {level}/{MAX_UPGRADE_LEVEL}  |  Cost: {cost_text}",
-        (rect.x + 12, rect.y + 7),
+        (rect.x + 54, rect.y + 7),
         COLORS["white"] if enabled else COLORS["dark_brown"],
     )
     draw_text(
         surface,
         small_font,
         UPGRADES[upgrade_key]["description"],
-        (rect.x + 12, rect.y + 27),
+        (rect.x + 54, rect.y + 27),
         COLORS["white"] if enabled else COLORS["dark_brown"],
     )
 
@@ -323,6 +348,7 @@ def main():
     title_font = pygame.font.SysFont("arial", 30, bold=True)
     body_font = pygame.font.SysFont("arial", 20)
     small_font = pygame.font.SysFont("arial", 16)
+    assets = load_assets()
 
     connection = create_database() #establish a connection to the SQLite database and create the necessary tables if they don't exist
     starting_upgrades = {"grinder": 0, "sign": 0}
@@ -445,12 +471,9 @@ def main():
             draw_text(screen, body_font, "Waiting for customers...", (60, 180), COLORS["brown"])
 
         for index, order in enumerate(state["queue"][:7]):
-            x = 85 + index * 75
-            y = 245
-            pygame.draw.circle(screen, COLORS["green"], (x, y), 27)
-            initials = "".join(word[0] for word in order.product.name.split())
-            label = small_font.render(initials, True, COLORS["white"])
-            screen.blit(label, label.get_rect(center=(x, y)))
+            x = 60 + index * 78
+            y = 220
+            screen.blit(assets[order.product.name], (x, y))
             if index == 0:
                 draw_text(
                     screen,
@@ -480,8 +503,8 @@ def main():
 
         pygame.draw.rect(screen, COLORS["white"], (500, 420, 460, 190), border_radius=12)
         draw_text(screen, body_font, "Upgrades  (press G / S)", (520, 435))
-        draw_upgrade_button(screen, small_font, GRINDER_BUTTON, state, "grinder")
-        draw_upgrade_button(screen, small_font, SIGN_BUTTON, state, "sign")
+        draw_upgrade_button(screen, small_font, GRINDER_BUTTON, state, "grinder", assets["grinder"])
+        draw_upgrade_button(screen, small_font, SIGN_BUTTON, state, "sign", assets["sign"])
 
         if state["ended"]: #if the day has ended, display an overlay with the day's summary and prompt to start the next day
             overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)

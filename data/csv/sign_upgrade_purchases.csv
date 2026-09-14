@@ -1,0 +1,6 @@
+purchase_id,day_id,upgrade_name,level,cost
+1,1,Store Sign,1,25.0
+2,1,Store Sign,2,50.0
+3,3,Store Sign,3,75.0
+4,5,Store Sign,4,100.0
+5,7,Store Sign,5,125.0

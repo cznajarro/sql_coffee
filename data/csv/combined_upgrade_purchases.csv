@@ -1,0 +1,11 @@
+purchase_id,day_id,upgrade_name,level,cost
+1,1,Better Grinder,1,20.0
+2,1,Store Sign,1,25.0
+3,1,Better Grinder,2,40.0
+4,2,Store Sign,2,50.0
+5,3,Better Grinder,3,60.0
+6,4,Store Sign,3,75.0
+7,6,Better Grinder,4,80.0
+8,7,Store Sign,4,100.0
+9,8,Better Grinder,5,100.0
+10,10,Store Sign,5,125.0

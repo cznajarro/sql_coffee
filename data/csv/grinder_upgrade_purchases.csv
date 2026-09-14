@@ -1,0 +1,6 @@
+purchase_id,day_id,upgrade_name,level,cost
+1,1,Better Grinder,1,20.0
+2,1,Better Grinder,2,40.0
+3,2,Better Grinder,3,60.0
+4,3,Better Grinder,4,80.0
+5,5,Better Grinder,5,100.0

@@ -1,0 +1,5 @@
+product_id,name,price,unit_cost,prep_seconds
+1,House Coffee,3.0,0.7,2.0
+2,Cold Brew,4.5,1.1,3.0
+3,Vanilla Latte,5.25,1.6,5.0
+4,Matcha Latte,5.75,1.9,6.0
